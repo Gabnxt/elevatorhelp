@@ -1,0 +1,55 @@
+import os
+import dropbox
+from flask import Flask, render_template, request, redirect, url_for
+from dotenv import load_dotenv
+import sqlite3
+
+load_dotenv()
+
+DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
+DROPBOX_FOLDER = "/Master Elevator Prints"
+
+app = Flask(__name__)
+
+DB_FILE = "tags.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS tags (path TEXT PRIMARY KEY, tags TEXT, favorite INTEGER)''')
+    conn.commit()
+    conn.close()
+
+def save_metadata(path, tags, favorite):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO tags (path, tags, favorite) VALUES (?, ?, ?)", (path, tags, favorite))
+    conn.commit()
+    conn.close()
+
+def get_metadata():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM tags")
+    data = {row[0]: {'tags': row[1], 'favorite': bool(row[2])} for row in c.fetchall()}
+    conn.close()
+    return data
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        save_metadata(request.form["path"], request.form.get("tags", ""), int("favorite" in request.form))
+        return redirect(url_for('index'))
+
+    try:
+        dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+        result = dbx.files_list_folder(DROPBOX_FOLDER)
+        files = result.entries
+        metadata = get_metadata()
+        return render_template("index.html", files=files, metadata=metadata)
+    except Exception as e:
+        return f"Error accessing Dropbox: {e}"
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True)
