@@ -1,6 +1,7 @@
 import os
 import pickle
-from flask import Flask, render_template, request
+import requests
+from flask import Flask, render_template, request, jsonify
 import dropbox
 from dotenv import load_dotenv
 
@@ -9,15 +10,34 @@ app = Flask(__name__)
 
 # Load environment variables
 load_dotenv()
-DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
+DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+DROPBOX_CLIENT_ID = os.getenv("DROPBOX_CLIENT_ID")
+DROPBOX_CLIENT_SECRET = os.getenv("DROPBOX_CLIENT_SECRET")
 DROPBOX_FOLDER = "/Master Elevator Prints"
 CACHE_FILE = "dropbox_cache.pkl"
 
-# Authenticate with Dropbox
-dbx = dropbox.Dropbox(DROPBOX_TOKEN)
-
-# Shared link cache to avoid redundant API calls
+# Global variables
+access_token = None
 shared_link_cache = {}
+
+# Token refresh logic
+def refresh_access_token():
+    global access_token
+    response = requests.post("https://api.dropboxapi.com/oauth2/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": DROPBOX_REFRESH_TOKEN,
+        "client_id": DROPBOX_CLIENT_ID,
+        "client_secret": DROPBOX_CLIENT_SECRET
+    })
+    if response.status_code == 200:
+        access_token = response.json()["access_token"]
+    else:
+        raise Exception("Failed to refresh access token: " + response.text)
+
+refresh_access_token()
+
+# Authenticate with Dropbox using refreshed token
+dbx = dropbox.Dropbox(access_token)
 
 # Function to generate direct Dropbox link
 def get_direct_link(path):
@@ -94,14 +114,13 @@ def group_files_by_category(files):
             category = path_parts[2] if len(path_parts) >= 3 else "Uncategorized"
             direct_url = get_direct_link(entry.path_lower)
             if direct_url:
-                file_data = {
-                    "name": entry.name,
-                    "path_display": entry.path_display,
-                    "direct_url": direct_url
+                entry_dict = {
+                    'name': entry.name,
+                    'path_display': entry.path_display,
+                    'direct_url': direct_url
                 }
-                categories.setdefault(category, []).append(file_data)
+                categories.setdefault(category, []).append(entry_dict)
     return categories
-
 
 @app.route("/", methods=["GET"])
 def index():
@@ -125,6 +144,23 @@ def refresh_cache():
     global dropbox_files
     dropbox_files = scan_dropbox_folder()
     return "Cache refreshed successfully."
+
+# Rudimentary AI Q&A
+@app.route("/ask", methods=["POST"])
+def ask():
+    question = request.json.get("question", "").lower()
+    response = "I'm not sure how to answer that. Please try a different question."
+    matches = []
+
+    for token in question.split():
+        matches.extend(search_index.get(token, []))
+
+    unique_matches = list(set(matches))[:5]
+    if unique_matches:
+        links = [get_direct_link(path) for path in unique_matches if get_direct_link(path)]
+        response = "Here are some documents that might help you:\n" + "\n".join(links)
+
+    return jsonify({"answer": response})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
